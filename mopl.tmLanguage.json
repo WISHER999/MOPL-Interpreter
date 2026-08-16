@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MOPL#",
+  "scopeName": "source.mopl",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#tag-decl" },
+    { "include": "#types" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#booleans" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.mopl",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.mopl",
+          "match": "\\b(Terminal|Op of|Dif in|Check If|Run|EndCheck|Cycle|Times|EndCycle|EndLogic|In|At|add a|Window|If ButtonPressed Replace|with)\\b"
+        }
+      ]
+    },
+    "tag-decl": {
+      "patterns": [
+        {
+          "name": "variable.other.mopl",
+          "match": "\\bTag\\.[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "keyword.operator.assignment.mopl",
+          "match": "\\+*="
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.mopl",
+          "match": "\\b(num|state|blea|logic)\\."
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.mopl",
+          "match": "'[^']*'"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.mopl",
+          "match": "\\b-?[0-9]+(\\.[0-9]+)?\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.mopl",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.mopl",
+          "match": "\\b(add|subtract|times|divide|cos|tan)\\b"
+        },
+        {
+          "name": "punctuation.terminator.mopl",
+          "match": "=="
+        }
+      ]
+    }
+  }
+}

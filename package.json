@@ -1,0 +1,51 @@
+{
+  "name": "mopl-language",
+  "displayName": "MOPL# Language Support",
+  "description": "Syntax highlighting and run support for MOPL# (.mopl) scripts",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:mopl"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "mopl",
+        "aliases": ["MOPL#", "mopl"],
+        "extensions": [".mopl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mopl",
+        "scopeName": "source.mopl",
+        "path": "./syntaxes/mopl.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "mopl.runFile",
+        "title": "MOPL#: Run Current File"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "mopl.runFile",
+          "when": "resourceLangId == mopl",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "mopl.runFile",
+        "key": "ctrl+r",
+        "mac": "cmd+r",
+        "when": "resourceLangId == mopl"
+      }
+    ]
+  }
+}
