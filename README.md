@@ -63,11 +63,6 @@ TUTORIAL.md             language tutorial
 NOTES.md                implementation scope, caveats, and next steps
 ```
 
-## Status
-
-Implemented: `Tag.` declarations/reassignment, `Terminal`, `Op of`
-(numeric add/subtract/times/divide), `Dif in`.
-
 
 
 ## License
