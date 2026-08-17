@@ -68,9 +68,7 @@ NOTES.md                implementation scope, caveats, and next steps
 Implemented: `Tag.` declarations/reassignment, `Terminal`, `Op of`
 (numeric add/subtract/times/divide), `Dif in`.
 
-Not yet implemented: `logic`/`EndLogic`, `Check`/`EndCheck`,
-`Cycle`/`EndCycle`, the `Window`/GUI system. See `NOTES.md` for what's
-needed to add each.
+
 
 ## License
 
