@@ -98,17 +98,18 @@ _main:
     stp     x29, x30, [sp, #-16]!
     mov     x29, sp
 
-    cmp     x0, #2
+cmp     x0, #3
     b.lt    .Lusage_error
 
-    // x1 = argv, load argv[1] (the script path) into x2
-    ldr     x2, [x1, #8]         // x2 = argv[1]
+    // x1 = argv, load argv[2] (the script path, after "run") into x2
+    ldr     x2, [x1, #16]        // x2 = argv[2]
 
     // ---- open(path, O_RDONLY, 0) ----
     mov     x0, x2               // path
     mov     x1, #O_RDONLY        // flags
     mov     x2, #0               // mode (unused for read)
-    mov     x16, #SYS_OPEN
+    movz    x16, #0x0005
+    movk    x16, #0x0200, lsl #16
     svc     #0
     b.cs    .Lopen_error         // carry set => syscall error
     adrp    x9, file_fd@PAGE
@@ -121,7 +122,8 @@ _main:
     add     x1, x1, file_buf@PAGEOFF
     mov     x0, x19
     mov     x2, #65536
-    mov     x16, #SYS_READ
+    movz    x16, #0x0003
+    movk    x16, #0x0200, lsl #16
     svc     #0
     b.cs    .Lopen_error
     adrp    x9, file_len@PAGE
@@ -130,7 +132,8 @@ _main:
 
     // ---- close(fd) ----
     mov     x0, x19
-    mov     x16, #SYS_CLOSE
+    movz    x16, #0x0006
+    movk    x16, #0x0200, lsl #16
     svc     #0
 
     // NUL-terminate the buffer at file_buf[file_len]
@@ -164,7 +167,8 @@ _main:
     b       .Lexit
 
 .Lexit:
-    mov     x16, #SYS_EXIT
+    movz    x16, #0x0001
+    movk    x16, #0x0200, lsl #16   
     svc     #0
 
 // -----------------------------------------------------------------
@@ -322,7 +326,8 @@ _print_cstr:
     b       .Lpc_len
 .Lpc_go:
     mov     x0, #1                  // stdout
-    mov     x16, #SYS_WRITE
+    movz    x16, #0x0004
+    movk    x16, #0x0200, lsl #16 
     svc     #0
     ldp     x29, x30, [sp], #16
     ret
@@ -454,6 +459,7 @@ heap_pool:      .skip 262144     // 256 KB bump-allocated heap
 heap_cursor_init: .quad 0
 .bss
 heap_cursor:    .skip 8
+.text
 
 // -----------------------------------------------------------------
 // _bump_alloc(x0 = size) -> x0 = pointer to size bytes, 8-byte aligned
@@ -570,11 +576,14 @@ _parse_int:
 //            strictly here; see NOTES.md for the strict-check extension)
 // -----------------------------------------------------------------
 _handle_tag_line:
-    stp     x29, x30, [sp, #-48]!
+    stp     x29, x30, [sp, #-64]!
     mov     x29, sp
     str     x19, [sp, #16]
     str     x20, [sp, #24]
     str     x21, [sp, #32]
+    str     x22, [sp, #40]
+    str     x23, [sp, #48]
+    str     x24, [sp, #56]
 
     add     x9, x0, #4              // skip "Tag."
 
@@ -673,30 +682,39 @@ _handle_tag_line:
     mov     x3, #0
     b       .Lht_store
 
+
 .Lht_store:
-    // does the tag already exist? if so, update in place + bump assign level
+    // stash the parsed value/type in callee-saved regs BEFORE any call
+    mov     x22, x20                  // type
+    mov     x23, x2                   // int value
+    mov     x24, x3                   // str value ptr
+
     mov     x0, x19
     bl      _find_tag
     cbz     x0, .Lht_new
     // existing tag: update value + type, increment assignment level
-    str     x20, [x0, #16]
-    str     x2,  [x0, #24]
-    str     x3,  [x0, #32]
+    str     x22, [x0, #16]
+    str     x23, [x0, #24]
+    str     x24, [x0, #32]
     ldr     x1, [x0, #40]
     add     x1, x1, #1
     str     x1, [x0, #40]
     b       .Lht_bail
 .Lht_new:
     mov     x0, x19
-    mov     x1, x20
-    // x2, x3 already set
+    mov     x1, x22
+    mov     x2, x23
+    mov     x3, x24
     bl      _create_tag
 
 .Lht_bail:
     ldr     x19, [sp, #16]
     ldr     x20, [sp, #24]
     ldr     x21, [sp, #32]
-    ldp     x29, x30, [sp], #48
+    ldr     x22, [sp, #40]
+    ldr     x23, [sp, #48]
+    ldr     x24, [sp, #56]
+    ldp     x29, x30, [sp], #64
     ret
 
 // -----------------------------------------------------------------
@@ -810,13 +828,14 @@ _handle_op_line:
     stp     x29, x30, [sp, #-32]!
     mov     x29, sp
     str     x19, [sp, #16]
+    str     x20, [sp, #24]
 
-    add     x9, x0, #5               // skip "Op of"
+    add     x20, x0, #5              // skip "Op of"  (x20 = callee-saved cursor)
 .Lop_skip1:
-    ldrb    w10, [x9]
+    ldrb    w10, [x20]
     cmp     w10, #' '
     b.ne    .Lop_read_a
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_skip1
 
 .Lop_read_a:
@@ -825,24 +844,24 @@ _handle_op_line:
     add     x10, x10, tok_buf@PAGEOFF
     mov     x11, x10
 .Lop_a_loop:
-    ldrb    w12, [x9]
+    ldrb    w12, [x20]
     cbz     w12, .Lop_bail
     cmp     w12, #' '
     b.eq    .Lop_a_done
     strb    w12, [x11], #1
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_a_loop
 .Lop_a_done:
     strb    wzr, [x11]
     mov     x0, x10
-    bl      _resolve_operand         // -> x0 = int value of A
+    bl      _resolve_operand         // -> x0 = int value of A (x20 survives: callee-saved)
     mov     x19, x0                  // x19 = A
 
 .Lop_skip2:
-    ldrb    w12, [x9]
+    ldrb    w12, [x20]
     cmp     w12, #' '
     b.ne    .Lop_read_op
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_skip2
 
 .Lop_read_op:
@@ -851,21 +870,21 @@ _handle_op_line:
     add     x10, x10, tag_name_buf@PAGEOFF
     mov     x11, x10
 .Lop_op_loop:
-    ldrb    w12, [x9]
+    ldrb    w12, [x20]
     cbz     w12, .Lop_bail
     cmp     w12, #' '
     b.eq    .Lop_op_done
     strb    w12, [x11], #1
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_op_loop
 .Lop_op_done:
     strb    wzr, [x11]
 
 .Lop_skip3:
-    ldrb    w12, [x9]
+    ldrb    w12, [x20]
     cmp     w12, #' '
     b.ne    .Lop_read_b
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_skip3
 
 .Lop_read_b:
@@ -873,54 +892,26 @@ _handle_op_line:
     add     x13, x13, tok_buf@PAGEOFF
     mov     x14, x13
 .Lop_b_loop:
-    ldrb    w12, [x9]
+    ldrb    w12, [x20]
     cbz     w12, .Lop_b_done2
     cmp     w12, #' '
     b.eq    .Lop_b_done
     cmp     w12, #'='
     b.eq    .Lop_b_done
     strb    w12, [x14], #1
-    add     x9, x9, #1
+    add     x20, x20, #1
     b       .Lop_b_loop
 .Lop_b_done:
 .Lop_b_done2:
     strb    wzr, [x14]
-    mov     x0, x13
-    bl      _resolve_operand          // -> x0 = int value of B
-    mov     x1, x0                    // x1 = B
-    mov     x0, x19                   // x0 = A
 
-    // dispatch on operator string in tag_name_buf
-    adrp    x2, tag_name_buf@PAGE
-    add     x2, x2, tag_name_buf@PAGEOFF
-    adrp    x3, .Lop_add_s@PAGE
-    add     x3, x3, .Lop_add_s@PAGEOFF
-    mov     x9, x2
-    mov     x10, x3
-    mov     x0, x9
-    mov     x1, x10
-    bl      _streq
-    // NOTE: full operator dispatch (add/subtract/times/divide) is
-    // implemented via _apply_operator below for clarity.
-    b       .Lop_dispatch
-
-.Lop_dispatch:
-    // reload A/B since _streq clobbered x0/x1
-    mov     x0, x19
-    ldr     x1, =0                    // placeholder, replaced below
-    // (values already resolved above; re-fetch via simpler path)
-    b       .Lop_apply
-
-.Lop_apply:
-    // Because we clobbered registers doing the streq probe above,
-    // recompute cleanly: re-parse operator + B from tag_name_buf/tok_buf.
     adrp    x0, tag_name_buf@PAGE
     add     x0, x0, tag_name_buf@PAGEOFF
     adrp    x1, tok_buf@PAGE
     add     x1, x1, tok_buf@PAGEOFF
     mov     x2, x19                    // A value
     bl      _apply_operator            // x0 = op string, x1 = B token, x2 = A -> returns result in x0
-    mov     x2, x0
+    mov     x19, x0                   // stash result in x19 (callee-saved: survives bl _find_tag)
 
     // store result into synthetic tag "_"
     adrp    x0, .Lop_result_name@PAGE
@@ -929,7 +920,7 @@ _handle_op_line:
     cbz     x0, .Lop_new_result
     mov     x9, #TAG_NUM
     str     x9, [x0, #16]
-    str     x2, [x0, #24]
+    str     x19, [x0, #24]
     ldr     x1, [x0, #40]
     add     x1, x1, #1
     str     x1, [x0, #40]
@@ -938,11 +929,13 @@ _handle_op_line:
     adrp    x0, .Lop_result_name@PAGE
     add     x0, x0, .Lop_result_name@PAGEOFF
     mov     x1, #TAG_NUM
+    mov     x2, x19
     mov     x3, #0
     bl      _create_tag
 
 .Lop_bail:
     ldr     x19, [sp, #16]
+    ldr     x20, [sp, #24]
     ldp     x29, x30, [sp], #32
     ret
 
@@ -961,28 +954,25 @@ _handle_op_line:
 //   the operator named in tag_name_buf (add/subtract/times/divide).
 //   cos/tan are stubbed to return A unchanged (extension point).
 // -----------------------------------------------------------------
+
 _apply_operator:
-    stp     x29, x30, [sp, #-32]!
+    stp     x29, x30, [sp, #-48]!
     mov     x29, sp
     str     x19, [sp, #16]
     str     x20, [sp, #24]
+    str     x21, [sp, #32]
     mov     x19, x0                  // op name
     mov     x20, x2                  // A value
     mov     x0, x1
     bl      _resolve_operand
-    mov     x1, x0                   // B value
+    mov     x21, x0                  // B value (callee-saved: survives bl _streq below)
 
     mov     x0, x19
-    adrp    x2, .Lop_add_s@PAGE
-    add     x2, x2, .Lop_add_s@PAGEOFF
-    mov     x3, x0
-    mov     x0, x3
-    mov     x9, x1                   // stash B
-    mov     x0, x19
-    mov     x1, x2
+    adrp    x1, .Lop_add_s@PAGE
+    add     x1, x1, .Lop_add_s@PAGEOFF
     bl      _streq
     cbz     x0, .Lao_try_sub
-    add     x0, x20, x9
+    add     x0, x20, x21
     b       .Lao_done
 
 .Lao_try_sub:
@@ -991,7 +981,7 @@ _apply_operator:
     add     x1, x1, .Lop_sub_s@PAGEOFF
     bl      _streq
     cbz     x0, .Lao_try_mul
-    sub     x0, x20, x9
+    sub     x0, x20, x21
     b       .Lao_done
 
 .Lao_try_mul:
@@ -1000,7 +990,7 @@ _apply_operator:
     add     x1, x1, .Lop_mul_s@PAGEOFF
     bl      _streq
     cbz     x0, .Lao_try_div
-    mul     x0, x20, x9
+    mul     x0, x20, x21
     b       .Lao_done
 
 .Lao_try_div:
@@ -1009,8 +999,8 @@ _apply_operator:
     add     x1, x1, .Lop_div_s@PAGEOFF
     bl      _streq
     cbz     x0, .Lao_default
-    cbz     x9, .Lao_divzero
-    sdiv    x0, x20, x9
+    cbz     x21, .Lao_divzero
+    sdiv    x0, x20, x21
     b       .Lao_done
 .Lao_divzero:
     mov     x0, #0
@@ -1023,7 +1013,8 @@ _apply_operator:
 .Lao_done:
     ldr     x19, [sp, #16]
     ldr     x20, [sp, #24]
-    ldp     x29, x30, [sp], #32
+    ldr     x21, [sp, #32]
+    ldp     x29, x30, [sp], #48
     ret
 
 // -----------------------------------------------------------------
@@ -1052,13 +1043,14 @@ _resolve_operand:
 //   (simplified single-line-per-tag form of the spec's example)
 // -----------------------------------------------------------------
 _handle_dif_line:
-    stp     x29, x30, [sp, #-16]!
+    stp     x29, x30, [sp, #-32]!
     mov     x29, sp
-    add     x9, x0, #6                // skip "Dif in"
+    str     x20, [sp, #16]
+    add     x19, x0, #6                // skip "Dif in"  (x19 = callee-saved cursor)
 
 .Ldif_next:
 .Ldif_skip_sp:
-    ldrb    w10, [x9]
+    ldrb    w10, [x19]
     cbz     w10, .Ldif_bail
     cmp     w10, #' '
     b.eq    .Ldif_adv
@@ -1066,23 +1058,24 @@ _handle_dif_line:
     b.eq    .Ldif_adv
     b       .Ldif_read
 .Ldif_adv:
-    add     x9, x9, #1
+    add     x19, x19, #1
     b       .Ldif_skip_sp
 .Ldif_read:
     adrp    x10, tag_name_buf@PAGE
     add     x10, x10, tag_name_buf@PAGEOFF
     mov     x11, x10
 .Ldif_read_loop:
-    ldrb    w12, [x9]
+    ldrb    w12, [x19]
     cbz     w12, .Ldif_read_done
     cmp     w12, #','
     b.eq    .Ldif_read_done
     strb    w12, [x11], #1
-    add     x9, x9, #1
+    add     x19, x19, #1
     b       .Ldif_read_loop
 .Ldif_read_done:
     strb    wzr, [x11]
 
+    mov     x20, x10                  // stash name-buffer ptr in callee-saved reg too
     mov     x0, x10
     bl      _find_tag
     cbz     x0, .Ldif_next            // unknown tag: skip
@@ -1090,7 +1083,7 @@ _handle_dif_line:
     // print "name = "
     mov     x21, x0                   // record ptr (survives calls below via reload pattern)
     str     x21, [sp, #-16]!          // stash on stack (simple, avoids extra callee-saved regs)
-    mov     x0, x10
+    mov     x0, x20
     bl      _print_cstr
     adrp    x0, .Ldif_eq@PAGE
     add     x0, x0, .Ldif_eq@PAGEOFF
@@ -1128,7 +1121,8 @@ _handle_dif_line:
     b       .Ldif_next
 
 .Ldif_bail:
-    ldp     x29, x30, [sp], #16
+    ldr     x20, [sp, #16]
+    ldp     x29, x30, [sp], #32
     ret
 
 .data

@@ -1,0 +1,10 @@
+Tag.x = num.5
+Tag.x += num.10
+Terminal 'x'
+
+Tag.HI = state.true
+Tag.Hi = num.1
+Op of Hi add HI ==
+Terminal '_'
+
+Dif in x, HI, Hi

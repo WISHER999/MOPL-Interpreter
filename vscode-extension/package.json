@@ -14,7 +14,11 @@
         "id": "mopl",
         "aliases": ["MOPL#", "mopl"],
         "extensions": [".mopl"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/mopl-icon.png",
+          "dark": "./icons/mopl-icon.png"
+        }
       }
     ],
     "grammars": [
@@ -27,7 +31,7 @@
     "commands": [
       {
         "command": "mopl.runFile",
-        "title": "MOPL#: Run Current File"
+        "title": "Run"
       }
     ],
     "menus": {
