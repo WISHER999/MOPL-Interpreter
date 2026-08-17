@@ -1,0 +1,17 @@
+Op of rnd 1 10 ==
+Terminal '_'
+
+Tag.c = blea.hello world
+Op of len c ==
+Terminal '_'
+
+Tag.name = blea.{What's your name?}
+Terminal 'name'
+
+Window 800 x 600, #1E1E2E, MainWindow = Tag.Window1 += blea.WINDOW
+In Tag.Window1;
+
+Cycle 3
+Tag.i += num.99
+Terminal 'i'
+EndCycle

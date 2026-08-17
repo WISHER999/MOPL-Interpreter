@@ -1,26 +1,8 @@
-// =====================================================================
-// MOPL# Interpreter — ARM64 Assembly (Apple Silicon / macOS)
-// =====================================================================
-// Implements:
-//   - File I/O (open/read/close a .mopl script passed as argv[1])
-//   - Lexer/line-scanner (splits the script into lines, trims whitespace)
-//   - Tag table (linked list) storing name/type/value/assignment-level
-//   - Tag.[name] = [type].[value]        (declaration)
-//   - Tag.[name] += / ++= ...            (reassignment, "+" count law)
-//   - Terminal '[name]'                  (stdout)
-//   - Op of a add b ==  / subtract / times / divide   (num math)
-//   - Dif in [name],[name],...           (introspection dump)
-//
-// NOT implemented in this pass (left as extension points, see NOTES.md):
-//   - logic tags / EndLogic execution
-//   - Check/EndCheck, Cycle/EndCycle control flow
-//   - Window / In / At GUI + Cocoa objc_msgSend bridge
-//
-// Build (on a real Mac with Xcode command line tools):
-//   as -o mopl.o mopl_backend.s
-//   ld -o mopl mopl.o -lSystem -syslibroot `xcrun -sdk macosx --show-sdk-path`
-//   ./mopl script.mopl
-// =====================================================================
+// build on mac yea
+ //  as -o mopl.o mopl_backend.s
+  // ld -o mopl mopl.o -lSystem -syslibroot `xcrun -sdk macosx --show-sdk-path`
+  // ./mopl run script.mopl
+
 
 .global _main
 .align 2
@@ -206,7 +188,7 @@ _run_script:
     strb    wzr, [x4]               // NUL-terminate line_buf
 
     mov     x0, x3
-    bl      _dispatch_line
+    bl      _cycle_route
     b       .Lline_loop
 
 .Lrun_done:
@@ -276,9 +258,39 @@ _dispatch_line:
     add     x1, x1, str_dif_in@PAGEOFF
     mov     x0, x9
     bl      _starts_with
-    cbz     x0, .Ldispatch_done     // unrecognized keyword: logic/check/cycle/window/etc — skip
+    cbz     x0, .Ltry_window
     mov     x0, x9
     bl      _handle_dif_line
+    b       .Ldispatch_done
+
+.Ltry_window:
+    adrp    x1, str_window_s@PAGE
+    add     x1, x1, str_window_s@PAGEOFF
+    mov     x0, x9
+    bl      _starts_with
+    cbz     x0, .Ltry_in
+    mov     x0, x9
+    bl      _handle_window_line
+    b       .Ldispatch_done
+
+.Ltry_in:
+    adrp    x1, str_in_s@PAGE
+    add     x1, x1, str_in_s@PAGEOFF
+    mov     x0, x9
+    bl      _starts_with
+    cbz     x0, .Ltry_at
+    mov     x0, x9
+    bl      _handle_in_line
+    b       .Ldispatch_done
+
+.Ltry_at:
+    adrp    x1, str_at_s@PAGE
+    add     x1, x1, str_at_s@PAGEOFF
+    mov     x0, x9
+    bl      _starts_with
+    cbz     x0, .Ldispatch_done     // unrecognized keyword: logic/check/etc — skip
+    mov     x0, x9
+    bl      _handle_at_line
 
 .Ldispatch_done:
     ldp     x29, x30, [sp], #16
@@ -576,7 +588,7 @@ _parse_int:
 //            strictly here; see NOTES.md for the strict-check extension)
 // -----------------------------------------------------------------
 _handle_tag_line:
-    stp     x29, x30, [sp, #-64]!
+    stp     x29, x30, [sp, #-80]!
     mov     x29, sp
     str     x19, [sp, #16]
     str     x20, [sp, #24]
@@ -584,6 +596,7 @@ _handle_tag_line:
     str     x22, [sp, #40]
     str     x23, [sp, #48]
     str     x24, [sp, #56]
+    str     x25, [sp, #64]
 
     add     x9, x0, #4              // skip "Tag."
 
@@ -606,7 +619,17 @@ _handle_tag_line:
     strb    wzr, [x11]
     mov     x19, x10                // x19 = tag name string
 
-    // skip spaces / count '+' characters (reassignment level) / skip '='
+    // count consecutive '+' characters right after the name (the "+" law)
+    mov     x25, #0
+.Lht_count_plus:
+    ldrb    w12, [x9]
+    cmp     w12, #'+'
+    b.ne    .Lht_skip_to_eq
+    add     x25, x25, #1
+    add     x9, x9, #1
+    b       .Lht_count_plus
+
+    // skip any remaining spaces / find '='
 .Lht_skip_to_eq:
     ldrb    w12, [x9]
     cbz     w12, .Lht_bail           // malformed line, bail out quietly
@@ -659,6 +682,17 @@ _handle_tag_line:
     cmp     x20, #TAG_STATE
     b.eq    .Lht_val_state
     // TAG_BLEA: duplicate the rest of the line into the heap as the string value
+    ldrb    w12, [x9]
+    cmp     w12, #'{'
+    b.ne    .Lht_val_blea_plain
+    mov     x0, x9
+    bl      _handle_prompt           // prints prompt, reads stdin -> x0 = input_buf
+    bl      _heap_strdup
+    mov     x21, x0
+    mov     x2, #0
+    mov     x3, x21
+    b       .Lht_store
+.Lht_val_blea_plain:
     mov     x0, x9
     bl      _heap_strdup
     mov     x21, x0                 // str value ptr
@@ -667,6 +701,16 @@ _handle_tag_line:
     b       .Lht_store
 
 .Lht_val_num:
+    ldrb    w12, [x9]
+    cmp     w12, #'{'
+    b.ne    .Lht_val_num_plain
+    mov     x0, x9
+    bl      _handle_prompt           // prints prompt, reads stdin -> x0 = input_buf
+    bl      _parse_int
+    mov     x2, x0
+    mov     x3, #0
+    b       .Lht_store
+.Lht_val_num_plain:
     mov     x0, x9
     bl      _parse_int
     mov     x2, x0
@@ -692,20 +736,34 @@ _handle_tag_line:
     mov     x0, x19
     bl      _find_tag
     cbz     x0, .Lht_new
-    // existing tag: update value + type, increment assignment level
+    // existing tag: the '+' count must equal the tag's current level
+    ldr     x1, [x0, #40]
+    cmp     x25, x1
+    b.ne    .Lht_law_error
     str     x22, [x0, #16]
     str     x23, [x0, #24]
     str     x24, [x0, #32]
-    ldr     x1, [x0, #40]
     add     x1, x1, #1
     str     x1, [x0, #40]
     b       .Lht_bail
 .Lht_new:
+    // first-ever write must have zero '+' characters
+    cbnz    x25, .Lht_law_error
     mov     x0, x19
     mov     x1, x22
     mov     x2, x23
     mov     x3, x24
     bl      _create_tag
+    b       .Lht_bail
+.Lht_law_error:
+    adrp    x0, err_plus_law@PAGE
+    add     x0, x0, err_plus_law@PAGEOFF
+    bl      _print_cstr
+    mov     x0, x19
+    bl      _print_cstr
+    adrp    x0, newline@PAGE
+    add     x0, x0, newline@PAGEOFF
+    bl      _print_cstr
 
 .Lht_bail:
     ldr     x19, [sp, #16]
@@ -714,26 +772,42 @@ _handle_tag_line:
     ldr     x22, [sp, #40]
     ldr     x23, [sp, #48]
     ldr     x24, [sp, #56]
-    ldp     x29, x30, [sp], #64
+    ldr     x25, [sp, #64]
+    ldp     x29, x30, [sp], #80
     ret
 
 // -----------------------------------------------------------------
 // _heap_strdup(x0 = src ptr, NUL or up to line end) -> x0 = heap copy
 // -----------------------------------------------------------------
 _heap_strdup:
-    stp     x29, x30, [sp, #-16]!
+    stp     x29, x30, [sp, #-32]!
     mov     x29, sp
-    mov     x9, x0
-    mov     x0, #256
+    str     x19, [sp, #16]
+    mov     x19, x0                 // x19 = src (callee-saved: survives bl _bump_alloc)
+
+    // measure length first so we allocate exactly what's needed
+    // (the old fixed 256-byte allocation silently overran into the
+    // next heap block for any source string longer than 255 bytes)
+    mov     x1, x19
+    mov     x2, #0
+.Lhs_len:
+    ldrb    w3, [x1, x2]
+    cbz     w3, .Lhs_len_done
+    add     x2, x2, #1
+    b       .Lhs_len
+.Lhs_len_done:
+    add     x0, x2, #1               // +1 for the NUL terminator
     bl      _bump_alloc
     mov     x10, x0
     mov     x11, x10
+    mov     x9, x19
 .Lhs_loop:
     ldrb    w12, [x9], #1
     strb    w12, [x11], #1
     cbnz    w12, .Lhs_loop
     mov     x0, x10
-    ldp     x29, x30, [sp], #16
+    ldr     x19, [sp, #16]
+    ldp     x29, x30, [sp], #32
     ret
 
 // -----------------------------------------------------------------
@@ -825,10 +899,12 @@ _handle_terminal_line:
 //   "Terminal '_'" can print it, matching the spec's demo pattern.
 // -----------------------------------------------------------------
 _handle_op_line:
-    stp     x29, x30, [sp, #-32]!
+    stp     x29, x30, [sp, #-48]!
     mov     x29, sp
     str     x19, [sp, #16]
     str     x20, [sp, #24]
+    str     x21, [sp, #32]
+    str     x22, [sp, #40]
 
     add     x20, x0, #5              // skip "Op of"  (x20 = callee-saved cursor)
 .Lop_skip1:
@@ -853,6 +929,22 @@ _handle_op_line:
     b       .Lop_a_loop
 .Lop_a_done:
     strb    wzr, [x11]
+
+    // special-case: "Op of rnd MIN MAX ==" and "Op of len NAME =="
+    // put a keyword where an operand would normally go -- detect and
+    // reroute before treating tok_buf as a normal operand.
+    mov     x0, x10
+    adrp    x1, str_rnd_s@PAGE
+    add     x1, x1, str_rnd_s@PAGEOFF
+    bl      _streq
+    cbnz    x0, .Lop_rnd_path
+
+    mov     x0, x10
+    adrp    x1, str_len_s@PAGE
+    add     x1, x1, str_len_s@PAGEOFF
+    bl      _streq
+    cbnz    x0, .Lop_len_path
+
     mov     x0, x10
     bl      _resolve_operand         // -> x0 = int value of A (x20 survives: callee-saved)
     mov     x19, x0                  // x19 = A
@@ -911,6 +1003,7 @@ _handle_op_line:
     add     x1, x1, tok_buf@PAGEOFF
     mov     x2, x19                    // A value
     bl      _apply_operator            // x0 = op string, x1 = B token, x2 = A -> returns result in x0
+.Lop_store_result:
     mov     x19, x0                   // stash result in x19 (callee-saved: survives bl _find_tag)
 
     // store result into synthetic tag "_"
@@ -936,7 +1029,9 @@ _handle_op_line:
 .Lop_bail:
     ldr     x19, [sp, #16]
     ldr     x20, [sp, #24]
-    ldp     x29, x30, [sp], #32
+    ldr     x21, [sp, #32]
+    ldr     x22, [sp, #40]
+    ldp     x29, x30, [sp], #48
     ret
 
 .data
@@ -998,12 +1093,142 @@ _apply_operator:
     adrp    x1, .Lop_div_s@PAGE
     add     x1, x1, .Lop_div_s@PAGEOFF
     bl      _streq
-    cbz     x0, .Lao_default
+    cbz     x0, .Lao_try_mod
     cbz     x21, .Lao_divzero
     sdiv    x0, x20, x21
     b       .Lao_done
 .Lao_divzero:
     mov     x0, #0
+    b       .Lao_done
+
+.Lao_try_mod:
+    mov     x0, x19
+    adrp    x1, str_mod_s@PAGE
+    add     x1, x1, str_mod_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_pow
+    cbz     x21, .Lao_divzero
+    sdiv    x9, x20, x21
+    msub    x0, x9, x21, x20
+    b       .Lao_done
+
+.Lao_try_pow:
+    mov     x0, x19
+    adrp    x1, str_pow_s@PAGE
+    add     x1, x1, str_pow_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_and
+    mov     x9, #1
+    mov     x10, x21
+    cbz     x10, .Lao_pow_done
+.Lao_pow_loop:
+    mul     x9, x9, x20
+    sub     x10, x10, #1
+    cbnz    x10, .Lao_pow_loop
+.Lao_pow_done:
+    mov     x0, x9
+    b       .Lao_done
+
+.Lao_try_and:
+    mov     x0, x19
+    adrp    x1, str_and_s@PAGE
+    add     x1, x1, str_and_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_or
+    and     x0, x20, x21
+    b       .Lao_done
+
+.Lao_try_or:
+    mov     x0, x19
+    adrp    x1, str_or_s@PAGE
+    add     x1, x1, str_or_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_xor
+    orr     x0, x20, x21
+    b       .Lao_done
+
+.Lao_try_xor:
+    mov     x0, x19
+    adrp    x1, str_xor_s@PAGE
+    add     x1, x1, str_xor_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_shl
+    eor     x0, x20, x21
+    b       .Lao_done
+
+.Lao_try_shl:
+    mov     x0, x19
+    adrp    x1, str_shl_s@PAGE
+    add     x1, x1, str_shl_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_shr
+    lsl     x0, x20, x21
+    b       .Lao_done
+
+.Lao_try_shr:
+    mov     x0, x19
+    adrp    x1, str_shr_s@PAGE
+    add     x1, x1, str_shr_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_min
+    asr     x0, x20, x21
+    b       .Lao_done
+
+.Lao_try_min:
+    mov     x0, x19
+    adrp    x1, str_min_s@PAGE
+    add     x1, x1, str_min_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_max
+    cmp     x20, x21
+    csel    x0, x20, x21, lt
+    b       .Lao_done
+
+.Lao_try_max:
+    mov     x0, x19
+    adrp    x1, str_max_s@PAGE
+    add     x1, x1, str_max_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_abs
+    cmp     x20, x21
+    csel    x0, x20, x21, gt
+    b       .Lao_done
+
+.Lao_try_abs:
+    mov     x0, x19
+    adrp    x1, str_abs_s@PAGE
+    add     x1, x1, str_abs_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_floor
+    cmp     x20, #0
+    cneg    x0, x20, lt
+    b       .Lao_done
+
+.Lao_try_floor:
+    mov     x0, x19
+    adrp    x1, str_floor_s@PAGE
+    add     x1, x1, str_floor_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_ceil
+    mov     x0, x20                  // integers only in this pass: floor(A) = A
+    b       .Lao_done
+
+.Lao_try_ceil:
+    mov     x0, x19
+    adrp    x1, str_ceil_s@PAGE
+    add     x1, x1, str_ceil_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_try_not
+    mov     x0, x20                  // integers only in this pass: ceil(A) = A
+    b       .Lao_done
+
+.Lao_try_not:
+    mov     x0, x19
+    adrp    x1, str_not_s@PAGE
+    add     x1, x1, str_not_s@PAGEOFF
+    bl      _streq
+    cbz     x0, .Lao_default
+    mvn     x0, x20
     b       .Lao_done
 
 .Lao_default:
@@ -1022,19 +1247,44 @@ _apply_operator:
 //   If the token names an existing num/state tag, returns its value.
 //   Otherwise parses it as a numeric literal.
 // -----------------------------------------------------------------
+// --- NEW FIXED CODE ---
 _resolve_operand:
-    stp     x29, x30, [sp, #-16]!
+    stp     x29, x30, [sp, #-32]!
     mov     x29, sp
-    mov     x9, x0
+    str     x19, [sp, #16]          // Save callee-saved x19
+    mov     x19, x0                 // Preserve token pointer safely in x19
+
     bl      _find_tag
     cbz     x0, .Lro_literal
     ldr     x0, [x0, #24]             // int value field works for num & state
     b       .Lro_done
+
 .Lro_literal:
-    mov     x0, x9
+    ldrb    w10, [x19]
+    cmp     w10, #'-'
+    b.eq    .Lro_parse
+    cmp     w10, #'0'
+    b.lt    .Lro_warn
+    cmp     w10, #'9'
+    b.le    .Lro_parse
+
+.Lro_warn:
+    adrp    x0, err_unknown_tag@PAGE
+    add     x0, x0, err_unknown_tag@PAGEOFF
+    bl      _print_cstr
+    mov     x0, x19
+    bl      _print_cstr
+    adrp    x0, err_unknown_tag2@PAGE
+    add     x0, x0, err_unknown_tag2@PAGEOFF
+    bl      _print_cstr
+
+.Lro_parse:
+    mov     x0, x19
     bl      _parse_int
+
 .Lro_done:
-    ldp     x29, x30, [sp], #16
+    ldr     x19, [sp, #16]
+    ldp     x29, x30, [sp], #32
     ret
 
 // -----------------------------------------------------------------
@@ -1068,6 +1318,8 @@ _handle_dif_line:
     ldrb    w12, [x19]
     cbz     w12, .Ldif_read_done
     cmp     w12, #','
+    b.eq    .Ldif_read_done
+    cmp     w12, #' '
     b.eq    .Ldif_read_done
     strb    w12, [x11], #1
     add     x19, x19, #1
@@ -1132,3 +1384,415 @@ _handle_dif_line:
 .Ldif_state: .asciz "state, level "
 .Ldif_blea:  .asciz "blea, level "
 .text
+
+// =================================================================
+// MODULE 4: random, prompts, GUI-syntax scaffold, Cycle/EndCycle
+// =================================================================
+.bss
+.align 4
+input_buf:          .skip 256
+cycle_buf:          .skip 8192        // 64 lines * 128 bytes
+cycle_line_count:   .skip 8
+cycle_active:       .skip 8
+cycle_n:            .skip 8
+
+.data
+.align 4
+rnd_seed:           .quad 88172645463325252
+str_mod_s:          .asciz "mod"
+str_pow_s:          .asciz "pow"
+str_and_s:          .asciz "and"
+str_or_s:           .asciz "or"
+str_xor_s:          .asciz "xor"
+str_shl_s:          .asciz "shl"
+str_shr_s:          .asciz "shr"
+str_min_s:          .asciz "min"
+str_max_s:          .asciz "max"
+str_abs_s:          .asciz "abs"
+str_floor_s:        .asciz "floor"
+str_ceil_s:         .asciz "ceil"
+str_not_s:          .asciz "not"
+str_rnd_s:          .asciz "rnd"
+str_len_s:          .asciz "len"
+str_cycle_s:        .asciz "Cycle"
+str_endcycle_s:     .asciz "EndCycle"
+str_window_s:       .asciz "Window"
+str_in_s:           .asciz "In "
+str_at_s:           .asciz "At "
+err_plus_law:       .asciz "runtime error: '+' count does not match assignment level for '"
+err_unknown_tag:    .asciz "runtime error: unknown/uninitialized tag '"
+err_unknown_tag2:   .asciz "'\n"
+window_trace_prefix: .asciz "[window] parsed: "
+window_trace_suffix: .asciz "  (scaffold — AppKit bridge not wired yet)\n"
+in_trace_prefix:    .asciz "[context] parsed: "
+at_trace_prefix:    .asciz "[layout] parsed: "
+.text
+
+// -----------------------------------------------------------------
+// _lcg_next() -> x0 = next 64-bit pseudo-random value (xorshift64)
+// Only touches x0/x1 -- safe to call with anything live in x9-x28.
+// -----------------------------------------------------------------
+_lcg_next:
+    adrp    x0, rnd_seed@PAGE
+    add     x0, x0, rnd_seed@PAGEOFF
+    ldr     x1, [x0]
+    eor     x1, x1, x1, lsl #13
+    eor     x1, x1, x1, lsr #7
+    eor     x1, x1, x1, lsl #17
+    str     x1, [x0]
+    mov     x0, x1
+    ret
+
+// -----------------------------------------------------------------
+// _rnd_range(x0 = min, x1 = max) -> x0 = min + (rand mod (max-min+1))
+// -----------------------------------------------------------------
+_rnd_range:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x9, x0
+    mov     x10, x1
+    cmp     x10, x9
+    b.ge    .Lrr_ok
+    mov     x11, x9
+    mov     x9, x10
+    mov     x10, x11
+.Lrr_ok:
+    sub     x11, x10, x9
+    add     x11, x11, #1
+    bl      _lcg_next
+    cmp     x11, #0
+    b.le    .Lrr_zero
+    and     x0, x0, #0x7fffffffffffffff
+    udiv    x12, x0, x11
+    msub    x0, x12, x11, x0
+    add     x0, x0, x9
+    b       .Lrr_done
+.Lrr_zero:
+    mov     x0, x9
+.Lrr_done:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// -----------------------------------------------------------------
+// _handle_prompt(x0 = ptr to '{Question text}...') -> prints the
+// question (stripped of braces), reads a line from stdin, strips the
+// trailing newline, and returns x0 = pointer to input_buf.
+// -----------------------------------------------------------------
+_handle_prompt:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    add     x0, x0, #1
+    mov     x9, x0
+.Lhp_find_brace:
+    ldrb    w10, [x9]
+    cbz     w10, .Lhp_print
+    cmp     w10, #'}'
+    b.eq    .Lhp_found_brace
+    add     x9, x9, #1
+    b       .Lhp_find_brace
+.Lhp_found_brace:
+    strb    wzr, [x9]
+.Lhp_print:
+    bl      _print_cstr
+    mov     w11, #'}'
+    strb    w11, [x9]
+
+    adrp    x1, input_buf@PAGE
+    add     x1, x1, input_buf@PAGEOFF
+    mov     x0, #0
+    mov     x2, #255
+    movz    x16, #0x0003
+    movk    x16, #0x0200, lsl #16
+    svc     #0
+    cmp     x0, #0
+    b.le    .Lhp_empty
+    adrp    x1, input_buf@PAGE
+    add     x1, x1, input_buf@PAGEOFF
+    add     x2, x1, x0
+    sub     x2, x2, #1
+    ldrb    w3, [x2]
+    cmp     w3, #10
+    b.ne    .Lhp_term
+    strb    wzr, [x2]
+    b       .Lhp_ret
+.Lhp_term:
+    strb    wzr, [x1, x0]
+.Lhp_ret:
+    adrp    x0, input_buf@PAGE
+    add     x0, x0, input_buf@PAGEOFF
+    ldp     x29, x30, [sp], #16
+    ret
+.Lhp_empty:
+    adrp    x0, input_buf@PAGE
+    add     x0, x0, input_buf@PAGEOFF
+    strb    wzr, [x0]
+    ldp     x29, x30, [sp], #16
+    ret
+
+// -----------------------------------------------------------------
+// Window / In / At -- parse-and-trace scaffold (no AppKit bridge yet)
+// -----------------------------------------------------------------
+_handle_window_line:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x9, x0
+    adrp    x0, window_trace_prefix@PAGE
+    add     x0, x0, window_trace_prefix@PAGEOFF
+    bl      _print_cstr
+    mov     x0, x9
+    bl      _print_cstr
+    adrp    x0, window_trace_suffix@PAGE
+    add     x0, x0, window_trace_suffix@PAGEOFF
+    bl      _print_cstr
+    ldp     x29, x30, [sp], #16
+    ret
+
+_handle_in_line:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x9, x0
+    adrp    x0, in_trace_prefix@PAGE
+    add     x0, x0, in_trace_prefix@PAGEOFF
+    bl      _print_cstr
+    mov     x0, x9
+    bl      _print_cstr
+    adrp    x0, newline@PAGE
+    add     x0, x0, newline@PAGEOFF
+    bl      _print_cstr
+    ldp     x29, x30, [sp], #16
+    ret
+
+_handle_at_line:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x9, x0
+    adrp    x0, at_trace_prefix@PAGE
+    add     x0, x0, at_trace_prefix@PAGEOFF
+    bl      _print_cstr
+    mov     x0, x9
+    bl      _print_cstr
+    adrp    x0, newline@PAGE
+    add     x0, x0, newline@PAGEOFF
+    bl      _print_cstr
+    ldp     x29, x30, [sp], #16
+    ret
+
+// -----------------------------------------------------------------
+// Op-line rnd/len special paths (branched to from _handle_op_line's
+// .Lop_a_done; share its stack frame/registers x20-x22)
+// -----------------------------------------------------------------
+.Lop_rnd_path:
+.Lop_rnd_skip1:
+    ldrb    w12, [x20]
+    cmp     w12, #' '
+    b.ne    .Lop_rnd_read_min
+    add     x20, x20, #1
+    b       .Lop_rnd_skip1
+.Lop_rnd_read_min:
+    adrp    x10, tok_buf@PAGE
+    add     x10, x10, tok_buf@PAGEOFF
+    mov     x11, x10
+.Lop_rnd_min_loop:
+    ldrb    w12, [x20]
+    cbz     w12, .Lop_bail
+    cmp     w12, #' '
+    b.eq    .Lop_rnd_min_done
+    strb    w12, [x11], #1
+    add     x20, x20, #1
+    b       .Lop_rnd_min_loop
+.Lop_rnd_min_done:
+    strb    wzr, [x11]
+    mov     x0, x10
+    bl      _resolve_operand
+    mov     x21, x0
+
+.Lop_rnd_skip2:
+    ldrb    w12, [x20]
+    cmp     w12, #' '
+    b.ne    .Lop_rnd_read_max
+    add     x20, x20, #1
+    b       .Lop_rnd_skip2
+.Lop_rnd_read_max:
+    adrp    x13, tok_buf@PAGE
+    add     x13, x13, tok_buf@PAGEOFF
+    mov     x14, x13
+.Lop_rnd_max_loop:
+    ldrb    w12, [x20]
+    cbz     w12, .Lop_rnd_max_done
+    cmp     w12, #' '
+    b.eq    .Lop_rnd_max_done
+    cmp     w12, #'='
+    b.eq    .Lop_rnd_max_done
+    strb    w12, [x14], #1
+    add     x20, x20, #1
+    b       .Lop_rnd_max_loop
+.Lop_rnd_max_done:
+    strb    wzr, [x14]
+    mov     x0, x13
+    bl      _resolve_operand
+    mov     x22, x0
+
+    mov     x0, x21
+    mov     x1, x22
+    bl      _rnd_range
+    b       .Lop_store_result
+
+.Lop_len_path:
+.Lop_len_skip1:
+    ldrb    w12, [x20]
+    cmp     w12, #' '
+    b.ne    .Lop_len_read
+    add     x20, x20, #1
+    b       .Lop_len_skip1
+.Lop_len_read:
+    adrp    x10, tag_name_buf@PAGE
+    add     x10, x10, tag_name_buf@PAGEOFF
+    mov     x11, x10
+.Lop_len_loop:
+    ldrb    w12, [x20]
+    cbz     w12, .Lop_len_name_done
+    cmp     w12, #' '
+    b.eq    .Lop_len_name_done
+    strb    w12, [x11], #1
+    add     x20, x20, #1
+    b       .Lop_len_loop
+.Lop_len_name_done:
+    strb    wzr, [x11]
+    mov     x0, x10
+    bl      _find_tag
+    cbz     x0, .Lop_len_zero
+    ldr     x1, [x0, #16]
+    cmp     x1, #TAG_BLEA
+    b.ne    .Lop_len_zero
+    ldr     x9, [x0, #32]
+    mov     x0, #0
+.Lop_len_count:
+    ldrb    w12, [x9, x0]
+    cbz     w12, .Lop_store_result
+    add     x0, x0, #1
+    b       .Lop_len_count
+.Lop_len_zero:
+    mov     x0, #0
+    b       .Lop_store_result
+
+// -----------------------------------------------------------------
+// _cycle_route(x0 = current line, NUL-terminated)
+//   Not currently capturing: dispatch normally, unless the line is
+//   "Cycle N" (starts capturing into cycle_buf).
+//   Currently capturing: append the line to cycle_buf, unless it's
+//   "EndCycle" (stop capturing and replay the captured lines N times).
+// -----------------------------------------------------------------
+_cycle_route:
+    stp     x29, x30, [sp, #-48]!
+    mov     x29, sp
+    str     x19, [sp, #16]
+    str     x20, [sp, #24]
+    str     x21, [sp, #32]
+    mov     x9, x0
+
+    adrp    x10, cycle_active@PAGE
+    add     x10, x10, cycle_active@PAGEOFF
+    ldr     x11, [x10]
+    cbnz    x11, .Lcr_capturing
+
+    adrp    x1, str_cycle_s@PAGE
+    add     x1, x1, str_cycle_s@PAGEOFF
+    mov     x0, x9
+    bl      _starts_with
+    cbz     x0, .Lcr_normal
+
+    add     x0, x9, #5
+.Lcr_skip_sp:
+    ldrb    w12, [x0]
+    cmp     w12, #' '
+    b.ne    .Lcr_parse_n
+    add     x0, x0, #1
+    b       .Lcr_skip_sp
+.Lcr_parse_n:
+    bl      _parse_int
+    adrp    x1, cycle_n@PAGE
+    add     x1, x1, cycle_n@PAGEOFF
+    str     x0, [x1]
+    adrp    x1, cycle_line_count@PAGE
+    add     x1, x1, cycle_line_count@PAGEOFF
+    mov     x2, #0
+    str     x2, [x1]
+    adrp    x1, cycle_active@PAGE
+    add     x1, x1, cycle_active@PAGEOFF
+    mov     x2, #1
+    str     x2, [x1]
+    b       .Lcr_done
+
+.Lcr_normal:
+    mov     x0, x9
+    bl      _dispatch_line
+    b       .Lcr_done
+
+.Lcr_capturing:
+    adrp    x1, str_endcycle_s@PAGE
+    add     x1, x1, str_endcycle_s@PAGEOFF
+    mov     x0, x9
+    bl      _starts_with
+    cbz     x0, .Lcr_capture_line
+
+    adrp    x1, cycle_active@PAGE
+    add     x1, x1, cycle_active@PAGEOFF
+    mov     x2, #0
+    str     x2, [x1]
+
+    adrp    x19, cycle_n@PAGE
+    add     x19, x19, cycle_n@PAGEOFF
+    ldr     x19, [x19]
+.Lcr_iter_loop:
+    cmp     x19, #0
+    b.le    .Lcr_done
+    adrp    x20, cycle_line_count@PAGE
+    add     x20, x20, cycle_line_count@PAGEOFF
+    ldr     x20, [x20]
+    mov     x21, #0
+.Lcr_line_loop:
+    cmp     x21, x20
+    b.ge    .Lcr_iter_next
+    adrp    x0, cycle_buf@PAGE
+    add     x0, x0, cycle_buf@PAGEOFF
+    mov     x1, #128
+    mul     x1, x21, x1
+    add     x0, x0, x1
+    bl      _dispatch_line
+    add     x21, x21, #1
+    b       .Lcr_line_loop
+.Lcr_iter_next:
+    sub     x19, x19, #1
+    b       .Lcr_iter_loop
+
+.Lcr_capture_line:
+    adrp    x10, cycle_line_count@PAGE
+    add     x10, x10, cycle_line_count@PAGEOFF
+    ldr     x11, [x10]
+    cmp     x11, #64
+    b.ge    .Lcr_done
+    adrp    x12, cycle_buf@PAGE
+    add     x12, x12, cycle_buf@PAGEOFF
+    mov     x13, #128
+    mul     x13, x11, x13
+    add     x12, x12, x13
+    mov     x14, #0
+.Lcr_copy_loop:
+    ldrb    w15, [x9, x14]
+    strb    w15, [x12, x14]
+    cbz     w15, .Lcr_copy_done
+    add     x14, x14, #1
+    cmp     x14, #127
+    b.lt    .Lcr_copy_loop
+    mov     w15, #0
+    strb    w15, [x12, x14]
+.Lcr_copy_done:
+    add     x11, x11, #1
+    str     x11, [x10]
+
+.Lcr_done:
+    ldr     x19, [sp, #16]
+    ldr     x20, [sp, #24]
+    ldr     x21, [sp, #32]
+    ldp     x29, x30, [sp], #48
+    ret 
